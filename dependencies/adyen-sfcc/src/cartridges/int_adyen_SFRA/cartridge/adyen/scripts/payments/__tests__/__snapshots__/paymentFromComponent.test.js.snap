@@ -1,0 +1,37 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Payment from Component should authorize express payment with skipping summary page 1`] = `
+[
+  [
+    {
+      "orderNo": "mocked_orderNo",
+      "orderToken": "mocked_orderToken",
+      "resultCode": "Authorised",
+      "skipSummaryPage": true,
+    },
+  ],
+]
+`;
+
+exports[`Payment from Component should cancel transaction 1`] = `
+[
+  [
+    "Checkout-Begin",
+    "stage",
+    "placeOrder",
+  ],
+]
+`;
+
+exports[`Payment from Component should return json response 1`] = `
+[
+  [
+    {
+      "orderNo": "mocked_orderNo",
+      "orderToken": "mocked_orderToken",
+      "resultCode": "Authorised",
+      "skipSummaryPage": false,
+    },
+  ],
+]
+`;
