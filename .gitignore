@@ -1,0 +1,11 @@
+.idea
+.DS_Store
+.vagrant
+node_modules
+dw.json
+/.vscode/
+/coverage/
+screenshots/
+playwright-report/
+test-results/
+Vagrantfile
