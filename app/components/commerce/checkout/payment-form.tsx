@@ -189,7 +189,6 @@ export default function PaymentForm({
   const [adyenFingerprint, setAdyenFingerprint] = useState<string>("");
   const [editFormError, setEditFormError] = useState<string | null>(null);
 
-
   // Get shipping address to use as default for billing if needed
   const shippingAddress =
     customer?.addresses?.find(
@@ -573,12 +572,6 @@ export default function PaymentForm({
 
           <div className="space-y-4">
             <h3 className="text-lg font-medium">Credit Card Information</h3>
-
-            {maskedNumber && (
-              <div className="rounded-md bg-muted p-3 text-sm">
-                Card number: {maskedNumber}
-              </div>
-            )}
 
             <div className="rounded-md border p-4">
               <div id="component-container" className="min-h-[200px]"></div>
