@@ -22,8 +22,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Pencil, Loader2 } from "lucide-react";
+import { CreditCard, Wallet, Check, Pencil, Loader2 } from "lucide-react";
 import type { CheckoutResponse, Address } from "@/types/response/checkout";
 import { router } from "@inertiajs/react";
 import axios from "axios";
@@ -38,11 +40,11 @@ import {
 import { AdyenCheckout, Card, type CoreConfiguration } from "@adyen/adyen-web";
 import "@adyen/adyen-web/styles/adyen.css";
 import {
-  Address_SaveAddress,
   Adyen_GetPaymentMethods,
   CheckoutServices_SubmitPayment,
   getUrl,
 } from "@/generated/routes";
+import { toast } from "sonner";
 
 // Define the Adyen form schema
 const adyenFormSchema = z.object({
@@ -168,17 +170,17 @@ type PaymentFormProps = {
   token: string;
   customer?: CheckoutResponse["customer"];
   order: CheckoutResponse["order"];
+  adyen: CheckoutResponse["adyen"];
   expirationYears?: number[];
   onSubmit: () => void;
-  adyen: CheckoutResponse["adyen"];
 };
 
 export default function PaymentForm({
   token,
   customer,
   order,
-  expirationYears = [],
   adyen,
+  expirationYears = [],
   onSubmit,
 }: PaymentFormProps) {
   const [showBillingAddress, setShowBillingAddress] = useState(false);
@@ -312,11 +314,14 @@ export default function PaymentForm({
 
   const updateBillingAddress = useMutation({
     mutationFn: async (formData: AdyenFormData) => {
-      const { data } = await axios.postForm(getUrl(Address_SaveAddress), {
-        ...formData,
-        addressId: editingAddress?.addressId,
-        csrf_token: token,
-      });
+      const { data } = await axios.postForm(
+        "/on/demandware.store/Sites-RefArch-Site/en_US/Address-SaveAddress",
+        {
+          ...formData,
+          addressId: editingAddress?.addressId,
+          csrf_token: token,
+        }
+      );
       return data;
     },
     onSuccess: () => {
@@ -418,7 +423,6 @@ export default function PaymentForm({
   const sameAsShipping = form.watch(
     "dwfrm_billing_shippingAddressUseAsBillingAddress"
   );
-  const paymentMethodValue = form.watch("dwfrm_billing_paymentMethod");
 
   // Adyen configuration
   const configuration: CoreConfiguration = {
@@ -426,7 +430,7 @@ export default function PaymentForm({
     environment: adyen.environment,
     locale: "en-US",
     countryCode: "US",
-    paymentMethodsResponse: paymentMethod.data,
+    paymentMethodsResponse: paymentMethod.data?.AdyenPaymentMethods,
     showPayButton: false,
   };
 
@@ -435,14 +439,17 @@ export default function PaymentForm({
     const init = async () => {
       const checkout = await AdyenCheckout(configuration);
       const newCard = new Card(checkout, {
-        brands: ["visa", "mc"], // Only allow Visa and Mastercard
-        onSubmit(state, component, actions) {
+        hasHolderName: true,
+        holderNameRequired: true,
+
+        onSubmit(state) {
+          if (!state.isValid) {
+            toast.error("Invaid");
+            return;
+          }
+
           // Update the form with the Adyen state data
           const stateData = JSON.stringify(state.data);
-          form.setValue(
-            "dwfrm_billing_adyenPaymentFields_adyenStateData",
-            stateData
-          );
 
           // Extract and set the brand code and holder name
           if (state.data.paymentMethod) {
@@ -473,24 +480,17 @@ export default function PaymentForm({
           }
 
           // Submit the form with all the updated values
-          setTimeout(() => {
-            submitPayment.mutate({
-              ...form.getValues(),
-              dwfrm_billing_adyenPaymentFields_adyenStateData: stateData,
-              dwfrm_billing_adyenPaymentFields_adyenFingerprint:
-                adyenFingerprint || "",
-              csrf_token: token,
-            });
-          }, 100);
-        },
-        onChange: function (state) {
-          // You can also get brand info in the general onChange handler
-          if (state.data.paymentMethod && state.data.paymentMethod.brand) {
-            form.setValue(
-              "dwfrm_billing_creditCardFields_cardType",
-              state.data.paymentMethod.brand
-            );
-          }
+          submitPayment.mutate({
+            ...form.getValues(),
+            dwfrm_billing_adyenPaymentFields_adyenStateData: stateData,
+            dwfrm_billing_adyenPaymentFields_adyenFingerprint:
+              adyenFingerprint || "",
+            brandCode:
+              state.data.paymentMethod?.brand && state.data.paymentMethod.brand,
+            dwfrm_billing_creditCardFields_cardType:
+              state.data.paymentMethod?.brand && state.data.paymentMethod.brand,
+            csrf_token: token,
+          });
         },
         onFieldValid(data) {
           if (data.endDigits) {
@@ -499,6 +499,8 @@ export default function PaymentForm({
               `************${data.endDigits}`
             );
           }
+
+          // Update card type based on brand
         },
       }).mount("#component-container");
       setCard(newCard);
@@ -570,13 +572,7 @@ export default function PaymentForm({
             render={({ field }) => <input type="hidden" {...field} />}
           />
 
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium">Credit Card Information</h3>
-
-            <div className="rounded-md border p-4">
-              <div id="component-container" className="min-h-[200px]"></div>
-            </div>
-          </div>
+          <div id="component-container"></div>
 
           <Separator />
 

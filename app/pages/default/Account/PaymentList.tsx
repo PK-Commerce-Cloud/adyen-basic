@@ -93,7 +93,9 @@ const PaymentList = (props: PaymentListProps) => {
             {props.paymentInstruments.map((payment) => (
               <div
                 key={payment.UUID}
-                className={`bg-muted/30 p-4 rounded-lg border-l-4 ${getCardTypeClass(payment.creditCardType)}`}
+                className={`bg-muted/30 p-4 rounded-lg border-l-4 ${getCardTypeClass(
+                  payment.creditCardType
+                )}`}
               >
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
