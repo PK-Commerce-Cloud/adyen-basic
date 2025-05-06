@@ -22,7 +22,12 @@ import { useQueryState } from "nuqs";
 import { router } from "@inertiajs/react";
 import { useMutation } from "@tanstack/react-query";
 import axios from "axios";
-import { getUrl, Order_Confirm } from "@/generated/routes";
+import {
+  CheckoutServices_PlaceOrder,
+  getUrl,
+  Order_Confirm,
+} from "@/generated/routes";
+import { toast } from "sonner";
 
 export default function CheckoutPage(checkoutData: CheckoutResponse) {
   const [activeTab, setActiveTab] = useQueryState("stage", {
@@ -39,13 +44,22 @@ export default function CheckoutPage(checkoutData: CheckoutResponse) {
   // Handle place order submission
   const placeOrder = useMutation({
     mutationFn: async () => {
-      const { data } = await axios.post(
-        "/on/demandware.store/Sites-RefArch-Site/en_US/CheckoutServices-PlaceOrder",
-        {
-          csrf_token: checkoutData.csrf?.token || "",
+      try {
+        const { data } = await axios.postForm(
+          getUrl(CheckoutServices_PlaceOrder),
+          {
+            csrf_token: checkoutData.csrf?.token || "",
+          }
+        );
+
+        if (data.error) {
+          throw new Error(data.errorMessage);
         }
-      );
-      return data;
+
+        return data;
+      } catch (error) {
+        throw error;
+      }
     },
     onSuccess: (data) => {
       // Redirect to order confirmation page
@@ -56,14 +70,12 @@ export default function CheckoutPage(checkoutData: CheckoutResponse) {
           orderToken: data.orderToken,
         },
         {
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
+          forceFormData: true,
         }
       );
     },
     onError: (error) => {
-      console.error("Error placing order:", error);
+      toast.error("Something went wrong");
     },
   });
 
@@ -72,8 +84,6 @@ export default function CheckoutPage(checkoutData: CheckoutResponse) {
   const isShippingCompleted =
     checkoutData.order?.shipping?.[0]?.selectedShippingMethod?.ID;
   const isPaymentCompleted = checkoutData.currentStage === "placeOrder";
-
-  console.log(checkoutData);
 
   return (
     <div className="container mx-auto py-8 px-4">
@@ -206,9 +216,10 @@ export default function CheckoutPage(checkoutData: CheckoutResponse) {
                 </CardHeader>
                 <CardContent>
                   <PaymentForm
+                    order={checkoutData.order}
                     token={checkoutData.csrf?.token || ""}
                     customer={checkoutData.customer}
-                    billing={checkoutData.order?.billing}
+                    adyen={checkoutData.adyen}
                     expirationYears={checkoutData.expirationYears || []}
                     onSubmit={() => {
                       setActiveTab("placeOrder");

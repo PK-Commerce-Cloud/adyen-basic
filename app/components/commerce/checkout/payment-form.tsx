@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
@@ -22,18 +22,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { CreditCard, Wallet, Check, Pencil, Loader2 } from "lucide-react";
-import type {
-  Billing,
-  CheckoutResponse,
-  Address,
-} from "@/types/response/checkout";
+import { Pencil, Loader2 } from "lucide-react";
+import type { CheckoutResponse, Address } from "@/types/response/checkout";
 import { router } from "@inertiajs/react";
 import axios from "axios";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -41,154 +35,265 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { AdyenCheckout, Card, type CoreConfiguration } from "@adyen/adyen-web";
+import "@adyen/adyen-web/styles/adyen.css";
+import {
+  Address_SaveAddress,
+  Adyen_GetPaymentMethods,
+  CheckoutServices_SubmitPayment,
+  getUrl,
+} from "@/generated/routes";
 
-const paymentSchema = z.object({
+// Define the Adyen form schema
+const adyenFormSchema = z.object({
+  addressSelector: z.string(),
+  dwfrm_billing_addressFields_firstName: z
+    .string()
+    .min(1, "First name is required"),
+  dwfrm_billing_addressFields_lastName: z
+    .string()
+    .min(1, "Last name is required"),
+  dwfrm_billing_addressFields_address1: z
+    .string()
+    .min(1, "Address is required"),
+  dwfrm_billing_addressFields_address2: z.string().optional(),
+  dwfrm_billing_addressFields_country: z.string().min(1, "Country is required"),
+  dwfrm_billing_addressFields_states_stateCode: z
+    .string()
+    .min(1, "State is required"),
+  dwfrm_billing_addressFields_city: z.string().min(1, "City is required"),
+  dwfrm_billing_addressFields_postalCode: z
+    .string()
+    .min(1, "Postal code is required"),
+  csrf_token: z.string(),
+  localizedNewAddressTitle: z.string(),
+  dwfrm_billing_contactInfoFields_phone: z
+    .string()
+    .min(1, "Phone number is required"),
   dwfrm_billing_paymentMethod: z
     .string()
     .min(1, { message: "Please select a payment method" }),
-  dwfrm_billing_shippingAddressUseAsBillingAddress: z.boolean().default(true),
-  // Credit card fields
-  dwfrm_billing_creditCardFields_cardType: z.string().optional(),
+  dwfrm_billing_adyenPaymentFields_adyenStateData: z.string().optional(),
+  dwfrm_billing_adyenPaymentFields_adyenPartialPaymentsOrder: z
+    .string()
+    .optional(),
   dwfrm_billing_creditCardFields_cardNumber: z.string().optional(),
-  dwfrm_billing_creditCardFields_cardOwner: z.string().optional(),
-  dwfrm_billing_creditCardFields_expirationMonth: z.string().optional(),
-  dwfrm_billing_creditCardFields_expirationYear: z.string().optional(),
-  dwfrm_billing_creditCardFields_securityCode: z.string().optional(),
-  dwfrm_billing_creditCardFields_saveCard: z.boolean().default(false),
-  // Billing address fields (only used if sameAsShipping is false)
-  dwfrm_billing_addressFields_firstName: z.string().optional(),
-  dwfrm_billing_addressFields_lastName: z.string().optional(),
-  dwfrm_billing_addressFields_address1: z.string().optional(),
-  dwfrm_billing_addressFields_address2: z.string().nullable(),
-  dwfrm_billing_addressFields_country: z.string().optional(),
-  dwfrm_billing_addressFields_city: z.string().optional(),
-  dwfrm_billing_addressFields_postalCode: z.string().optional(),
-  dwfrm_billing_contactInfoFields_phone: z.string().optional(),
-  // Saved payment method
-  savedPaymentMethodUUID: z.string().optional(),
-  securityCode: z.string().optional(),
+  dwfrm_billing_creditCardFields_cardType: z.string().optional(),
+  adyenPaymentMethod: z.string().optional(),
+  adyenIssuerName: z.string().optional(),
+  dwfrm_billing_adyenPaymentFields_issuer: z.string().optional(),
+  brandCode: z.string().optional(),
+  holderName: z.string().optional(),
+  dwfrm_billing_adyenPaymentFields_adyenFingerprint: z.string().optional(),
+  dwfrm_billing_shippingAddressUseAsBillingAddress: z.boolean().default(true),
 });
+
+type AdyenFormData = z.infer<typeof adyenFormSchema>;
+
+// US States for dropdown
+const US_STATES = [
+  { code: "AL", name: "Alabama" },
+  { code: "AK", name: "Alaska" },
+  { code: "AZ", name: "Arizona" },
+  { code: "AR", name: "Arkansas" },
+  { code: "CA", name: "California" },
+  { code: "CO", name: "Colorado" },
+  { code: "CT", name: "Connecticut" },
+  { code: "DE", name: "Delaware" },
+  { code: "FL", name: "Florida" },
+  { code: "GA", name: "Georgia" },
+  { code: "HI", name: "Hawaii" },
+  { code: "ID", name: "Idaho" },
+  { code: "IL", name: "Illinois" },
+  { code: "IN", name: "Indiana" },
+  { code: "IA", name: "Iowa" },
+  { code: "KS", name: "Kansas" },
+  { code: "KY", name: "Kentucky" },
+  { code: "LA", name: "Louisiana" },
+  { code: "ME", name: "Maine" },
+  { code: "MD", name: "Maryland" },
+  { code: "MA", name: "Massachusetts" },
+  { code: "MI", name: "Michigan" },
+  { code: "MN", name: "Minnesota" },
+  { code: "MS", name: "Mississippi" },
+  { code: "MO", name: "Missouri" },
+  { code: "MT", name: "Montana" },
+  { code: "NE", name: "Nebraska" },
+  { code: "NV", name: "Nevada" },
+  { code: "NH", name: "New Hampshire" },
+  { code: "NJ", name: "New Jersey" },
+  { code: "NM", name: "New Mexico" },
+  { code: "NY", name: "New York" },
+  { code: "NC", name: "North Carolina" },
+  { code: "ND", name: "North Dakota" },
+  { code: "OH", name: "Ohio" },
+  { code: "OK", name: "Oklahoma" },
+  { code: "OR", name: "Oregon" },
+  { code: "PA", name: "Pennsylvania" },
+  { code: "RI", name: "Rhode Island" },
+  { code: "SC", name: "South Carolina" },
+  { code: "SD", name: "South Dakota" },
+  { code: "TN", name: "Tennessee" },
+  { code: "TX", name: "Texas" },
+  { code: "UT", name: "Utah" },
+  { code: "VT", name: "Vermont" },
+  { code: "VA", name: "Virginia" },
+  { code: "WA", name: "Washington" },
+  { code: "WV", name: "West Virginia" },
+  { code: "WI", name: "Wisconsin" },
+  { code: "WY", name: "Wyoming" },
+];
+
+// Countries for dropdown
+const COUNTRIES = [
+  { code: "US", name: "United States" },
+  { code: "CA", name: "Canada" },
+  { code: "MX", name: "Mexico" },
+  { code: "GB", name: "United Kingdom" },
+  { code: "FR", name: "France" },
+  { code: "DE", name: "Germany" },
+  { code: "IT", name: "Italy" },
+  { code: "ES", name: "Spain" },
+  { code: "JP", name: "Japan" },
+  { code: "CN", name: "China" },
+  { code: "AU", name: "Australia" },
+  { code: "BR", name: "Brazil" },
+  { code: "IN", name: "India" },
+  { code: "RU", name: "Russia" },
+  { code: "ZA", name: "South Africa" },
+  { code: "AF", name: "Afghanistan" },
+];
 
 type PaymentFormProps = {
   token: string;
   customer?: CheckoutResponse["customer"];
-  billing?: Billing;
+  order: CheckoutResponse["order"];
   expirationYears?: number[];
   onSubmit: () => void;
+  adyen: CheckoutResponse["adyen"];
 };
 
 export default function PaymentForm({
   token,
   customer,
-  billing,
+  order,
   expirationYears = [],
+  adyen,
   onSubmit,
 }: PaymentFormProps) {
   const [showBillingAddress, setShowBillingAddress] = useState(false);
-  const [showSavedCards, setShowSavedCards] = useState(
-    customer?.customerPaymentInstruments &&
-      customer.customerPaymentInstruments.length > 0
-  );
+  const [useShippingAsBilling, setUseShippingAsBilling] = useState(true);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingAddress, setEditingAddress] = useState<Address | null>(null);
-  const [useShippingAsBilling, setUseShippingAsBilling] = useState(true);
+  const [card, setCard] = useState<Card>();
+  const [adyenFingerprint, setAdyenFingerprint] = useState<string>("");
+  const [editFormError, setEditFormError] = useState<string | null>(null);
 
-  const savedPaymentMethods = customer?.customerPaymentInstruments || [];
-  const paymentMethods = billing?.payment.applicablePaymentMethods || [];
-  const paymentCards = billing?.payment.applicablePaymentCards || [];
 
   // Get shipping address to use as default for billing if needed
   const shippingAddress =
     customer?.addresses?.find(
-      (addr) => addr.addressId === billing?.matchingAddressId
+      (addr) => addr.addressId === order?.billing?.matchingAddressId
     ) || customer?.preferredAddress;
 
-  const form = useForm<z.infer<typeof paymentSchema>>({
-    resolver: zodResolver(paymentSchema),
+  const form = useForm<AdyenFormData>({
+    resolver: zodResolver(adyenFormSchema),
     defaultValues: {
-      dwfrm_billing_paymentMethod: "CREDIT_CARD",
-      dwfrm_billing_shippingAddressUseAsBillingAddress: true,
-      dwfrm_billing_creditCardFields_cardType:
-        paymentCards.length > 0 ? paymentCards[0].cardType : "",
-      dwfrm_billing_creditCardFields_cardNumber: "",
-      dwfrm_billing_creditCardFields_cardOwner: "",
-      dwfrm_billing_creditCardFields_expirationMonth: "",
-      dwfrm_billing_creditCardFields_expirationYear: "",
-      dwfrm_billing_creditCardFields_securityCode: "",
-      dwfrm_billing_creditCardFields_saveCard: false,
-      // Use billing address if available, otherwise use shipping address as default
+      addressSelector: order?.billing?.matchingAddressId || "",
       dwfrm_billing_addressFields_firstName:
-        billing?.billingAddress?.address?.firstName ||
+        order?.billing?.billingAddress?.address?.firstName ||
         shippingAddress?.firstName ||
         "",
       dwfrm_billing_addressFields_lastName:
-        billing?.billingAddress?.address?.lastName ||
+        order?.billing?.billingAddress?.address?.lastName ||
         shippingAddress?.lastName ||
         "",
       dwfrm_billing_addressFields_address1:
-        billing?.billingAddress?.address?.address1 ||
+        order?.billing?.billingAddress?.address?.address1 ||
         shippingAddress?.address1 ||
         "",
       dwfrm_billing_addressFields_address2:
-        billing?.billingAddress?.address?.address2 ||
+        order?.billing?.billingAddress?.address?.address2 ||
         shippingAddress?.address2 ||
         "",
       dwfrm_billing_addressFields_country:
-        billing?.billingAddress?.address?.countryCode?.value ||
+        order?.billing?.billingAddress?.address?.countryCode?.value ||
         shippingAddress?.countryCode?.value ||
         "US",
+      dwfrm_billing_addressFields_states_stateCode:
+        order?.billing?.billingAddress?.address?.stateCode || "AL",
       dwfrm_billing_addressFields_city:
-        billing?.billingAddress?.address?.city || shippingAddress?.city || "",
+        order?.billing?.billingAddress?.address?.city ||
+        shippingAddress?.city ||
+        "",
       dwfrm_billing_addressFields_postalCode:
-        billing?.billingAddress?.address?.postalCode ||
+        order?.billing?.billingAddress?.address?.postalCode ||
         shippingAddress?.postalCode ||
         "",
+      csrf_token: token,
+      localizedNewAddressTitle: "New Address",
       dwfrm_billing_contactInfoFields_phone:
-        billing?.billingAddress?.address?.phone || shippingAddress?.phone || "",
-      savedPaymentMethodUUID:
-        savedPaymentMethods.length > 0
-          ? savedPaymentMethods[0].UUID
-          : undefined,
+        order?.billing?.billingAddress?.address?.phone ||
+        shippingAddress?.phone ||
+        "",
+      dwfrm_billing_paymentMethod: "AdyenComponent",
+      dwfrm_billing_adyenPaymentFields_adyenStateData: "",
+      dwfrm_billing_adyenPaymentFields_adyenPartialPaymentsOrder: "",
+      dwfrm_billing_creditCardFields_cardNumber: "",
+      dwfrm_billing_creditCardFields_cardType: "visa",
+      adyenPaymentMethod: "Cards",
+      adyenIssuerName: "",
+      dwfrm_billing_adyenPaymentFields_issuer: "",
+      brandCode: "",
+      holderName: "",
+      dwfrm_billing_adyenPaymentFields_adyenFingerprint: "",
+      dwfrm_billing_shippingAddressUseAsBillingAddress: true,
     },
   });
 
-  const editForm = useForm<z.infer<typeof paymentSchema>>({
-    resolver: zodResolver(paymentSchema),
+  const editForm = useForm<AdyenFormData>({
+    resolver: zodResolver(adyenFormSchema),
     defaultValues: {
+      addressSelector: "",
       dwfrm_billing_addressFields_firstName: "",
       dwfrm_billing_addressFields_lastName: "",
       dwfrm_billing_addressFields_address1: "",
       dwfrm_billing_addressFields_address2: "",
       dwfrm_billing_addressFields_country: "US",
+      dwfrm_billing_addressFields_states_stateCode: "AL",
       dwfrm_billing_addressFields_city: "",
       dwfrm_billing_addressFields_postalCode: "",
+      csrf_token: token,
+      localizedNewAddressTitle: "New Address",
       dwfrm_billing_contactInfoFields_phone: "",
+      dwfrm_billing_paymentMethod: "AdyenComponent",
+      dwfrm_billing_adyenPaymentFields_adyenStateData: "",
+      dwfrm_billing_adyenPaymentFields_adyenPartialPaymentsOrder: "",
+      dwfrm_billing_creditCardFields_cardNumber: "",
+      dwfrm_billing_creditCardFields_cardType: "visa",
+      adyenPaymentMethod: "Cards",
+      adyenIssuerName: "",
+      dwfrm_billing_adyenPaymentFields_issuer: "",
+      brandCode: "",
+      holderName: "",
+      dwfrm_billing_adyenPaymentFields_adyenFingerprint: "",
+      dwfrm_billing_shippingAddressUseAsBillingAddress: true,
     },
   });
 
   const submitPayment = useMutation({
-    mutationFn: async (formData: z.infer<typeof paymentSchema>) => {
-      // If using saved payment method
-      if (showSavedCards && formData.savedPaymentMethodUUID) {
-        const { data } = await axios.postForm(
-          "/on/demandware.store/Sites-RefArch-Site/en_US/CheckoutServices-SubmitPayment",
-          {
-            ...formData,
-            storedPaymentUUID: formData.savedPaymentMethodUUID,
-            securityCode: "123",
-            csrf_token: token,
-          }
-        );
-        return data;
-      }
+    mutationFn: async (formData: AdyenFormData) => {
+      // Ensure the fingerprint is included
+      const updatedFormData = {
+        ...formData,
+        dwfrm_billing_adyenPaymentFields_adyenFingerprint: adyenFingerprint,
+        csrf_token: token,
+      };
 
-      // Otherwise submit full payment form
+      // Submit full payment form
       const { data } = await axios.postForm(
-        "/on/demandware.store/Sites-RefArch-Site/en_US/CheckoutServices-SubmitPayment",
-        {
-          ...formData,
-          csrf_token: token,
-        }
+        getUrl(CheckoutServices_SubmitPayment),
+        updatedFormData
       );
       return data;
     },
@@ -207,15 +312,12 @@ export default function PaymentForm({
   });
 
   const updateBillingAddress = useMutation({
-    mutationFn: async (formData: z.infer<typeof paymentSchema>) => {
-      const { data } = await axios.postForm(
-        "/on/demandware.store/Sites-RefArch-Site/en_US/Address-SaveAddress",
-        {
-          ...formData,
-          addressId: editingAddress?.addressId,
-          csrf_token: token,
-        }
-      );
+    mutationFn: async (formData: AdyenFormData) => {
+      const { data } = await axios.postForm(getUrl(Address_SaveAddress), {
+        ...formData,
+        addressId: editingAddress?.addressId,
+        csrf_token: token,
+      });
       return data;
     },
     onSuccess: () => {
@@ -230,6 +332,50 @@ export default function PaymentForm({
       console.error("Error updating address:", error);
     },
   });
+
+  const paymentMethod = useQuery({
+    queryKey: ["paymentMethods"],
+    queryFn: async () => {
+      const { data } = await axios.postForm(getUrl(Adyen_GetPaymentMethods), {
+        csrf_token: token,
+      });
+      return data;
+    },
+  });
+
+  function handleSubmit(values: AdyenFormData) {
+    // The card.submit() will trigger the onSubmit callback in the Adyen component
+    // which will update the form values before the actual form submission
+    if (
+      card &&
+      (values.dwfrm_billing_paymentMethod === "AdyenComponent" ||
+        values.dwfrm_billing_paymentMethod === "CREDIT_CARD")
+    ) {
+      card.submit();
+      // No need for additional submission as it's handled in the onSubmit callback of the Adyen component
+    } else {
+      // For non-Adyen payment methods, submit directly
+      submitPayment.mutate({
+        ...values,
+        csrf_token: token,
+      });
+    }
+  }
+
+  function handleEditSubmit(values: AdyenFormData) {
+    setEditFormError(null);
+    updateBillingAddress.mutate(values, {
+      onError: (error) => {
+        console.error("Error updating address:", error);
+        setEditFormError("Failed to update address. Please try again.");
+      },
+    });
+  }
+
+  function startEditingAddress(address: Address) {
+    setEditingAddress(address);
+    setIsEditDialogOpen(true);
+  }
 
   // Set up edit form when editing an address
   useEffect(() => {
@@ -269,387 +415,175 @@ export default function PaymentForm({
     }
   }, [editingAddress, editForm]);
 
-  useEffect(() => {
-    // If we have shipping data and the user wants to edit billing (not using shipping as billing)
-    if (!useShippingAsBilling && customer?.addresses?.length > 0) {
-      // Find the shipping address that's being used
-      const shippingAddress =
-        customer.addresses.find(
-          (addr) => addr.addressId === billing?.matchingAddressId
-        ) || customer.preferredAddress;
-
-      if (shippingAddress) {
-        // Pre-fill the billing form with shipping address data
-        form.setValue(
-          "dwfrm_billing_addressFields_firstName",
-          shippingAddress.firstName
-        );
-        form.setValue(
-          "dwfrm_billing_addressFields_lastName",
-          shippingAddress.lastName
-        );
-        form.setValue(
-          "dwfrm_billing_addressFields_address1",
-          shippingAddress.address1
-        );
-        form.setValue(
-          "dwfrm_billing_addressFields_address2",
-          shippingAddress.address2 || ""
-        );
-        form.setValue(
-          "dwfrm_billing_addressFields_country",
-          shippingAddress.countryCode.value
-        );
-        form.setValue("dwfrm_billing_addressFields_city", shippingAddress.city);
-        form.setValue(
-          "dwfrm_billing_addressFields_postalCode",
-          shippingAddress.postalCode
-        );
-        form.setValue(
-          "dwfrm_billing_contactInfoFields_phone",
-          shippingAddress.phone
-        );
-      }
-    }
-  }, [useShippingAsBilling, customer, billing, form]);
-
-  function handleSubmit(values: z.infer<typeof paymentSchema>) {
-    submitPayment.mutate(values);
-  }
-
-  function handleEditSubmit(values: z.infer<typeof paymentSchema>) {
-    updateBillingAddress.mutate(values);
-  }
-
-  function startEditingAddress(address: Address) {
-    setEditingAddress(address);
-    setIsEditDialogOpen(true);
-  }
-
   // Watch for changes to sameAsShipping
   const sameAsShipping = form.watch(
     "dwfrm_billing_shippingAddressUseAsBillingAddress"
   );
-  const paymentMethod = form.watch("dwfrm_billing_paymentMethod");
+  const paymentMethodValue = form.watch("dwfrm_billing_paymentMethod");
 
+  // Adyen configuration
+  const configuration: CoreConfiguration = {
+    clientKey: adyen.clientKey,
+    environment: adyen.environment,
+    locale: "en-US",
+    countryCode: "US",
+    paymentMethodsResponse: paymentMethod.data,
+    showPayButton: false,
+  };
 
-  console.log(form.formState.errors)
+  // Initialize Adyen
+  useEffect(() => {
+    const init = async () => {
+      const checkout = await AdyenCheckout(configuration);
+      const newCard = new Card(checkout, {
+        brands: ["visa", "mc"], // Only allow Visa and Mastercard
+        onSubmit(state, component, actions) {
+          // Update the form with the Adyen state data
+          const stateData = JSON.stringify(state.data);
+          form.setValue(
+            "dwfrm_billing_adyenPaymentFields_adyenStateData",
+            stateData
+          );
+
+          // Extract and set the brand code and holder name
+          if (state.data.paymentMethod) {
+            form.setValue(
+              "brandCode",
+              state.data.paymentMethod.type || "scheme"
+            );
+            form.setValue(
+              "holderName",
+              state.data.paymentMethod.holderName || ""
+            );
+          }
+
+          // Extract fingerprint if available
+          if (
+            state.data.paymentMethod &&
+            state.data.paymentMethod.encryptedSecurityCode
+          ) {
+            // This is a placeholder - in a real implementation, you'd extract the fingerprint from the Adyen response
+            const fingerprintMatch = stateData.match(/fingerprint":"([^"]+)/);
+            if (fingerprintMatch && fingerprintMatch[1]) {
+              setAdyenFingerprint(fingerprintMatch[1]);
+              form.setValue(
+                "dwfrm_billing_adyenPaymentFields_adyenFingerprint",
+                fingerprintMatch[1]
+              );
+            }
+          }
+
+          // Submit the form with all the updated values
+          setTimeout(() => {
+            submitPayment.mutate({
+              ...form.getValues(),
+              dwfrm_billing_adyenPaymentFields_adyenStateData: stateData,
+              dwfrm_billing_adyenPaymentFields_adyenFingerprint:
+                adyenFingerprint || "",
+              csrf_token: token,
+            });
+          }, 100);
+        },
+        onChange: function (state) {
+          // You can also get brand info in the general onChange handler
+          if (state.data.paymentMethod && state.data.paymentMethod.brand) {
+            form.setValue(
+              "dwfrm_billing_creditCardFields_cardType",
+              state.data.paymentMethod.brand
+            );
+          }
+        },
+        onFieldValid(data) {
+          if (data.endDigits) {
+            form.setValue(
+              "dwfrm_billing_creditCardFields_cardNumber",
+              `************${data.endDigits}`
+            );
+          }
+        },
+      }).mount("#component-container");
+      setCard(newCard);
+    };
+
+    if (paymentMethod.data) {
+      init();
+    }
+  }, [paymentMethod.data, form]);
+
+  // Get available payment methods from order
+  const paymentMethods =
+    order?.billing?.payment?.applicablePaymentMethods || [];
 
   return (
     <>
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-8">
+        <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
+          {/* Hidden fields for Adyen data */}
+          <Controller
+            control={form.control}
+            name="dwfrm_billing_adyenPaymentFields_adyenStateData"
+            render={({ field }) => {
+              return <input type="hidden" {...field} />;
+            }}
+          />
+
+          <Controller
+            control={form.control}
+            name="brandCode"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
+          <Controller
+            control={form.control}
+            name="holderName"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
+          <Controller
+            control={form.control}
+            name="dwfrm_billing_adyenPaymentFields_adyenFingerprint"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
+          <Controller
+            control={form.control}
+            name="dwfrm_billing_creditCardFields_cardNumber"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
+          <Controller
+            control={form.control}
+            name="dwfrm_billing_creditCardFields_cardType"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
+          <Controller
+            control={form.control}
+            name="adyenPaymentMethod"
+            render={({ field }) => (
+              <input type="hidden" value="Cards" {...field} />
+            )}
+          />
+
+          <Controller
+            control={form.control}
+            name="dwfrm_billing_adyenPaymentFields_adyenPartialPaymentsOrder"
+            render={({ field }) => <input type="hidden" {...field} />}
+          />
+
           <div className="space-y-4">
-            <h3 className="text-lg font-medium">Payment Method</h3>
+            <h3 className="text-lg font-medium">Credit Card Information</h3>
 
-            <FormField
-              control={form.control}
-              name="dwfrm_billing_paymentMethod"
-              render={({ field }) => (
-                <FormItem className="space-y-3">
-                  <FormControl>
-                    <RadioGroup
-                      onValueChange={field.onChange}
-                      defaultValue={field.value}
-                      className="grid grid-cols-2 gap-4"
-                    >
-                      {paymentMethods.map((method) => (
-                        <div key={method.ID} className="relative">
-                          <RadioGroupItem
-                            value={method.ID}
-                            id={method.ID}
-                            className="peer sr-only"
-                          />
-                          <Label
-                            htmlFor={method.ID}
-                            className="flex flex-col items-center justify-center p-4 border rounded-md cursor-pointer peer-data-[state=checked]:border-primary peer-data-[state=checked]:bg-primary/5"
-                          >
-                            {method.ID === "CREDIT_CARD" ? (
-                              <CreditCard className="h-8 w-8 mb-2" />
-                            ) : (
-                              <Wallet className="h-8 w-8 mb-2" />
-                            )}
-                            <span className="font-medium">{method.name}</span>
-                          </Label>
-                          <Check className="absolute hidden h-5 w-5 top-4 right-4 text-primary peer-data-[state=checked]:block" />
-                        </div>
-                      ))}
-                    </RadioGroup>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
+            {maskedNumber && (
+              <div className="rounded-md bg-muted p-3 text-sm">
+                Card number: {maskedNumber}
+              </div>
+            )}
 
-          {paymentMethod === "CREDIT_CARD" && (
-            <div className="space-y-4">
-              {savedPaymentMethods.length > 0 && (
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-medium">
-                    Credit Card Information
-                  </h3>
-                  <div className="flex space-x-2">
-                    <Button
-                      type="button"
-                      variant={showSavedCards ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setShowSavedCards(true)}
-                    >
-                      Saved Cards
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={!showSavedCards ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setShowSavedCards(false)}
-                    >
-                      New Card
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {showSavedCards && savedPaymentMethods.length > 0 ? (
-                <div className="gap-4 flex flex-col">
-                  <FormField
-                    control={form.control}
-                    name="savedPaymentMethodUUID"
-                    render={({ field }) => (
-                      <FormItem className="space-y-3">
-                        <FormControl>
-                          <RadioGroup
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                            className="space-y-3"
-                          >
-                            {savedPaymentMethods.map((card) => (
-                              <div
-                                key={card.UUID}
-                                className="flex items-start space-x-3"
-                              >
-                                <RadioGroupItem
-                                  value={card.UUID}
-                                  id={card.UUID}
-                                  className="mt-1"
-                                />
-                                <Label
-                                  htmlFor={card.UUID}
-                                  className="flex-1 cursor-pointer"
-                                >
-                                  <div className="flex justify-between">
-                                    <span className="font-medium">
-                                      {card.creditCardType}{" "}
-                                      {card.maskedCreditCardNumber}
-                                    </span>
-                                  </div>
-                                  <p className="text-sm text-muted-foreground">
-                                    Expires {card.creditCardExpirationMonth}/
-                                    {card.creditCardExpirationYear}
-                                  </p>
-                                  <p className="text-sm">
-                                    {card.creditCardHolder}
-                                  </p>
-                                </Label>
-                              </div>
-                            ))}
-                            <div className="flex items-start space-x-3">
-                              <RadioGroupItem
-                                value="new-card"
-                                id="new-card"
-                                className="mt-1"
-                                onClick={() => setShowSavedCards(false)}
-                              />
-                              <Label
-                                htmlFor="new-card"
-                                className="flex-1 cursor-pointer"
-                              >
-                                <span className="font-medium">
-                                  Add a new card
-                                </span>
-                              </Label>
-                            </div>
-                          </RadioGroup>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="securityCode"
-                    render={({ field }) => (
-                      <FormItem className="space-y-3">
-                        <FormLabel>Securuty Code</FormLabel>
-
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_cardType"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Card Type</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select card type" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {paymentCards.map((card) => (
-                              <SelectItem
-                                key={card.cardType}
-                                value={card.cardType}
-                              >
-                                {card.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_cardNumber"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Card Number</FormLabel>
-                        <FormControl>
-                          <Input placeholder="4242 4242 4242 4242" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_cardOwner"
-                    render={({ field }) => (
-                      <FormItem className="col-span-2">
-                        <FormLabel>Name on Card</FormLabel>
-                        <FormControl>
-                          <Input placeholder="John Doe" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_expirationMonth"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Expiration Month</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="MM" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {Array.from({ length: 12 }, (_, i) => {
-                              const month = i + 1;
-                              return (
-                                <SelectItem
-                                  key={month}
-                                  value={month.toString().padStart(2, "0")}
-                                >
-                                  {month.toString().padStart(2, "0")}
-                                </SelectItem>
-                              );
-                            })}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_expirationYear"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Expiration Year</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="YYYY" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {expirationYears.map((year) => (
-                              <SelectItem key={year} value={year.toString()}>
-                                {year}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_securityCode"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Security Code (CVC)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="123" maxLength={4} {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="dwfrm_billing_creditCardFields_saveCard"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-start space-x-3 space-y-0 col-span-2">
-                        <FormControl>
-                          <Checkbox
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                        <div className="space-y-1 leading-none">
-                          <FormLabel>
-                            Save this card for future purchases
-                          </FormLabel>
-                        </div>
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              )}
+            <div className="rounded-md border p-4">
+              <div id="component-container" className="min-h-[200px]"></div>
             </div>
-          )}
+          </div>
 
           <Separator />
 
@@ -668,7 +602,7 @@ export default function PaymentForm({
                       checked={field.value}
                       onCheckedChange={(checked) => {
                         field.onChange(checked);
-                        setUseShippingAsBilling(checked);
+                        setUseShippingAsBilling(!!checked);
                         setShowBillingAddress(!checked);
                       }}
                     />
@@ -689,36 +623,38 @@ export default function PaymentForm({
               </div>
             ) : (
               <>
-                {billing?.billingAddress?.address && (
+                {order?.billing?.billingAddress?.address && (
                   <div className="border p-4 rounded-md mb-4">
                     <div className="flex justify-between items-start">
                       <div>
                         <p className="font-medium">
-                          {billing.billingAddress.address.firstName}{" "}
-                          {billing.billingAddress.address.lastName}
+                          {order.billing.billingAddress.address.firstName}{" "}
+                          {order.billing.billingAddress.address.lastName}
                         </p>
-                        <p>{billing.billingAddress.address.address1}</p>
-                        {billing.billingAddress.address.address2 && (
-                          <p>{billing.billingAddress.address.address2}</p>
+                        <p>{order.billing.billingAddress.address.address1}</p>
+                        {order.billing.billingAddress.address.address2 && (
+                          <p>{order.billing.billingAddress.address.address2}</p>
                         )}
                         <p>
-                          {billing.billingAddress.address.city},{" "}
-                          {billing.billingAddress.address.postalCode}
+                          {order.billing.billingAddress.address.city},{" "}
+                          {order.billing.billingAddress.address.postalCode}
                         </p>
                         <p>
                           {
-                            billing.billingAddress.address.countryCode
+                            order.billing.billingAddress.address.countryCode
                               .displayValue
                           }
                         </p>
-                        <p>{billing.billingAddress.address.phone}</p>
+                        <p>{order.billing.billingAddress.address.phone}</p>
                       </div>
                       <Button
                         type="button"
                         variant="ghost"
                         size="icon"
                         onClick={() =>
-                          startEditingAddress(billing.billingAddress.address)
+                          startEditingAddress(
+                            order.billing.billingAddress.address
+                          )
                         }
                       >
                         <Pencil className="h-4 w-4" />
@@ -801,10 +737,14 @@ export default function PaymentForm({
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="US">United States</SelectItem>
-                            <SelectItem value="CA">Canada</SelectItem>
-                            <SelectItem value="GB">United Kingdom</SelectItem>
-                            <SelectItem value="ME">Mexico</SelectItem>
+                            {COUNTRIES.map((country) => (
+                              <SelectItem
+                                key={country.code}
+                                value={country.code}
+                              >
+                                {country.name}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                         <FormMessage />
@@ -835,6 +775,34 @@ export default function PaymentForm({
                         <FormControl>
                           <Input placeholder="10001" {...field} />
                         </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="dwfrm_billing_addressFields_states_stateCode"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>State</FormLabel>
+                        <Select
+                          onValueChange={field.onChange}
+                          defaultValue={field.value}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a state" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {US_STATES.map((state) => (
+                              <SelectItem key={state.code} value={state.code}>
+                                {state.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -889,6 +857,11 @@ export default function PaymentForm({
               onSubmit={editForm.handleSubmit(handleEditSubmit)}
               className="space-y-4"
             >
+              {editFormError && (
+                <div className="bg-destructive/10 text-destructive p-3 rounded-md mb-4">
+                  {editFormError}
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={editForm.control}
@@ -962,10 +935,11 @@ export default function PaymentForm({
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="US">United States</SelectItem>
-                          <SelectItem value="CA">Canada</SelectItem>
-                          <SelectItem value="GB">United Kingdom</SelectItem>
-                          <SelectItem value="ME">Mexico</SelectItem>
+                          {COUNTRIES.map((country) => (
+                            <SelectItem key={country.code} value={country.code}>
+                              {country.name}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -996,6 +970,34 @@ export default function PaymentForm({
                       <FormControl>
                         <Input placeholder="10001" {...field} />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={editForm.control}
+                  name="dwfrm_billing_addressFields_states_stateCode"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>State</FormLabel>
+                      <Select
+                        onValueChange={field.onChange}
+                        defaultValue={field.value}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a state" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {US_STATES.map((state) => (
+                            <SelectItem key={state.code} value={state.code}>
+                              {state.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <FormMessage />
                     </FormItem>
                   )}
